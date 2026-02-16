@@ -28,17 +28,40 @@ def _read_database_url() -> str:
     """
     Read database connection URL.
 
-    Per platform rules, prefer db_connection.txt. If not present, fall back to env vars.
+    Platform rule for PostgreSQL container integration:
+      - ALWAYS read connection from db_connection.txt (typically contains: 'psql postgresql://...').
+
+    Env vars are supported as a fallback for local development, but the canonical
+    connection should come from db_connection.txt.
+
+    Supported env overrides:
+      - DB_CONNECTION_FILE: absolute or relative path to db_connection.txt
+      - POSTGRES_URL: full SQLAlchemy-compatible URL (fallback only)
+      - POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_HOST/POSTGRES_PORT/POSTGRES_DB (fallback only)
     """
-    # Prefer db_connection.txt (expected for PostgreSQL container integration).
-    candidate_paths = [
-        Path(__file__).resolve().parents[3] / "db_connection.txt",  # repo root-ish
-        Path(__file__).resolve().parents[2] / "db_connection.txt",  # zwiggy_backend/
-        Path("db_connection.txt"),
-    ]
+    # Prefer an explicit path if provided by the orchestrator/runtime.
+    explicit = os.getenv("DB_CONNECTION_FILE")
+    candidate_paths = []
+    if explicit:
+        candidate_paths.append(Path(explicit))
+
+    # Then check common repo/container locations.
+    candidate_paths.extend(
+        [
+            # workspace root of the backend container
+            Path(__file__).resolve().parents[2] / "db_connection.txt",  # .../zwiggy_backend/db_connection.txt
+            # monorepo root (one level above zwiggy_backend/)
+            Path(__file__).resolve().parents[3] / "db_connection.txt",
+            # current working directory
+            Path("db_connection.txt"),
+            # sibling database container path in this multi-workspace setup
+            Path(__file__).resolve().parents[4] / "gourmet-hub-321222-321232" / "zwiggy_database" / "db_connection.txt",
+        ]
+    )
+
     for p in candidate_paths:
         try:
-            if p.exists():
+            if p and p.exists():
                 content = p.read_text(encoding="utf-8")
                 url = _parse_psql_command_to_url(content)
                 if url:
@@ -47,8 +70,8 @@ def _read_database_url() -> str:
             # Ignore and continue to env fallback
             pass
 
-    # ENV fallback (orchestrator provides these via .env)
-    # NOTE: Do not assume values, only build a connection string if all exist.
+    # ENV fallback (useful in some dev/CI setups). Do not assume values beyond
+    # their presence; only build a connection string if all required fields exist.
     pg_url = os.getenv("POSTGRES_URL")
     if pg_url:
         return pg_url
@@ -63,7 +86,8 @@ def _read_database_url() -> str:
 
     raise RuntimeError(
         "Database connection is not configured. "
-        "Expected db_connection.txt with a 'psql postgresql://...' line, or POSTGRES_URL, "
+        "Expected db_connection.txt with a 'psql postgresql://...' line (preferred), "
+        "optionally pointed to by DB_CONNECTION_FILE, or POSTGRES_URL, "
         "or POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_PORT/POSTGRES_DB env vars."
     )
 
